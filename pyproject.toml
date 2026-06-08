@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cddtools"
+version = "0.0.1"
+description = "CANdela CDD parser that exports as JSON."
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "Joe.Jiang" }]
+license = { file = "LICENSE" }
+keywords = ["cdd", "candela", "uds", "diagnostics"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+[project.scripts]
+cddtools = "cddtools.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["cddtools*"]
