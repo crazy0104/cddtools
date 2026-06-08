@@ -1,43 +1,45 @@
 # cddtools
 
-[English](README.en.md)
+[中文](README.zh.md)
 
-`cddtools` 是一个独立的 Python 工具库，用于解析 CANdela `.cdd` 诊断文件，并导出
-JSON 数据。它可以作为库导入，也可以通过命令行输出 JSON 文件。
+`cddtools` is a standalone Python package for parsing CANdela `.cdd` diagnostic
+files into JSON. It can be used as a Python library or as a command-line JSON
+exporter.
 
-### 功能
+### Features
 
-- 解析 `.cdd` 文件并输出 JSON。
-- 解析 ECU、Variant、UDS 服务列表、请求参数和响应参数。
-- 解析 CAN 地址配置、UDS timing、DID、DTC、CDD 数据类型、枚举、文本表、长度、
-  字节序、单位、factor/offset 等信息。
-- 支持在完整 JSON 中单独输出 `didList` 和 `dtcList`。
-- 支持单独导出 DID 列表或 DTC 列表。
-- 支持命令行输出到 stdout 或写入指定 JSON 文件。
-- 支持 Python API：`parse_tester_info()`、`parse()`、`parse_dids()`、
-  `parse_dtcs()`、`load_file()`。
+- Parse `.cdd` files and export JSON.
+- Parse ECU, variants, UDS services, request parameters, and response
+  parameters.
+- Parse CAN addressing, UDS timing, DID, DTC, CDD data types, enums, text
+  tables, lengths, byte order, units, factor/offset, and related metadata.
+- Include separate `didList` and `dtcList` fields in full JSON output.
+- Export DID or DTC lists separately.
+- Write JSON to stdout or to a specified output file.
+- Provide Python APIs: `parse_tester_info()`, `parse()`, `parse_dids()`,
+  `parse_dtcs()`, and `load_file()`.
 
-### 安装
+### Install
 
 ```bash
 pip install -e .
 ```
 
-### 命令行
+### CLI
 
-写入 JSON 文件：
+Write JSON to a file:
 
 ```bash
 cddtools parse input.cdd output.json --parseResp
 ```
 
-输出到 stdout：
+Write JSON to stdout:
 
 ```bash
 python -m cddtools parse input.cdd
 ```
 
-支持的命令：
+Supported commands:
 
 - `parse`
 - `parseTesterInfo`
@@ -47,9 +49,9 @@ python -m cddtools parse input.cdd
 - `parseDtcs`
 - `parse-dtcs`
 
-目前 `parse` 和 `parseTesterInfo` 返回相同的 JSON 结构。
+`parse` currently returns the same JSON shape as `parseTesterInfo`.
 
-单独导出 DID 或 DTC：
+Export DID or DTC separately:
 
 ```bash
 python -m cddtools parseDids input.cdd
@@ -67,7 +69,7 @@ did_list = parse_dids("input.cdd")
 dtc_list = parse_dtcs("input.cdd")
 ```
 
-返回值是字典：
+The result is a dictionary:
 
 ```json
 {
@@ -90,7 +92,7 @@ dtc_list = parse_dtcs("input.cdd")
 }
 ```
 
-失败时返回：
+On failure:
 
 ```json
 {
@@ -99,19 +101,19 @@ dtc_list = parse_dtcs("input.cdd")
 }
 ```
 
-### 示例
+### Example
 
-仓库内包含一个最小示例：
+A minimal example is included:
 
 ```bash
 python -m cddtools parse examples/Multilingual-Example.cdd
 ```
 
-### 文档
+### Documentation
 
-- [使用说明](doc/usage.md)
+- [Usage](doc/usage.md)
 
-### 测试
+### Testing
 
 ```bash
 python -m unittest discover -s tests -p "test_*.py"

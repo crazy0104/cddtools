@@ -1,6 +1,6 @@
 # cddtools
 
-[中文](README.md)
+[中文](README.zh.md)
 
 `cddtools` is a standalone Python package for parsing CANdela `.cdd` diagnostic
 files into JSON. It can be used as a Python library or as a command-line JSON
