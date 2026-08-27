@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cddtools"
-version = "0.1.0"
+dynamic = ["version"]
 description = "CDD diagnostic file parser that exports as JSON."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -19,6 +19,9 @@ classifiers = [
 
 [project.scripts]
 cddtools = "cddtools.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "cddtools._version.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["."]

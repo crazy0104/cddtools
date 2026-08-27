@@ -807,7 +807,11 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(len(payload["data"]), 4)
 
     def test_cli_reports_version(self):
+        """`--version` must report what the package declares, so the two
+        cannot drift apart."""
         import subprocess
+
+        import cddtools
 
         completed = subprocess.run(
             [sys.executable, "-m", "cddtools", "--version"],
@@ -815,7 +819,9 @@ class ApiTests(unittest.TestCase):
             capture_output=True,
             text=True,
         )
-        self.assertEqual(completed.stdout.strip(), "cddtools 0.1.0")
+        self.assertEqual(
+            completed.stdout.strip(), f"cddtools {cddtools.__version__}"
+        )
 
 
 if __name__ == "__main__":
