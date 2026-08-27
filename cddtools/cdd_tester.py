@@ -491,52 +491,14 @@ class CddTester:
     def supported_interfaces(self, ecu_doc):
         """The interfaces a tester can be built for.
 
-        An interface is an attribute in the COM.INTERFACES category, set to 1
-        by the ECUs that support it. Documents that carry no attribute
-        categories still name their interfaces through the qualifier prefix
-        of a `<interface>.BusType` parameter, so that is the fallback.
+        An interface is an attribute in the COM.INTERFACES category, which
+        the ECUs that support it set to 1.
         """
-        interfaces = [
+        return [
             interface
             for interface in self._attributes.parse_interfaces(ecu_doc)
             if interface["enabled"]
         ]
-        if interfaces:
-            return interfaces
-        return self._interfaces_by_bus_type(ecu_doc)
-
-    def _interfaces_by_bus_type(self, ecu_doc):
-        entries = self._attributes.parse(ecu_doc)
-        by_qual = {entry["qual"]: entry for entry in entries}
-
-        interfaces = []
-        for entry in entries:
-            qual = entry["qual"]
-            if "." not in qual:
-                continue
-            prefix, suffix = qual.split(".", 1)
-            if suffix.lower() != "bustype":
-                continue
-            support = by_qual.get(prefix)
-            if support is not None and str(support["value"]) == "0":
-                continue
-            interfaces.append(
-                {
-                    "name": (support or entry)["name"],
-                    "qual": prefix,
-                    "enabled": True,
-                    "parameters": [
-                        {
-                            **other,
-                            "interface": prefix,
-                            "parameter": other["qual"].split(".", 1)[1],
-                        }
-                        for other in entries
-                        if other["qual"].startswith(f"{prefix}.")
-                    ],
-                }
-            )
-        return interfaces
 
     @staticmethod
     def _interface_for_variant(interface, variant_qual):
@@ -1019,6 +981,11 @@ class CddTester:
             or "CDD"
         )
         interfaces = self.supported_interfaces(ecu_doc)
+        if not interfaces:
+            raise ValueError(
+                "no supported interface: the document declares none in its "
+                "COM.INTERFACES attribute category"
+            )
         instances = CddServicesParser(self._shared).parse(ecu_doc)
         data_types = CddDataTypesParser(self._shared).parse(ecu_doc)
         by_qual = {entry["qual"]: entry for entry in data_types}

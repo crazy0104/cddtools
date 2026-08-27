@@ -34,9 +34,9 @@ tester.build(ecu_doc)                  # 整个结构
 | 1 | 多 | 接口 qual |
 | 多 | 多 | `变体.接口` |
 
-`supported_interfaces()` 先按 `COM.INTERFACES` 属性类别找（见
-[parsers.md §6.4](parsers.md#64-三个接口入口的区别)）；文档没有属性类别时退回按
-`<接口>.BusType` 的 qual 前缀发现接口。
+`supported_interfaces()` 按 `COM.INTERFACES` 属性类别找（见
+[parsers.md §6.4](parsers.md#64-三个接口入口的区别)）——通信参数在 CDD 里就是普通属性，
+类别是文档自己给的分组。一个都没有时 `build()` 直接报错，而不是返回空结构。
 
 ## 2. 总线类型靠参数集判断，不靠名字
 
