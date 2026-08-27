@@ -52,13 +52,52 @@ class CddParserShared:
             return ""
         return self.text_by_path(element, "QUAL") or self.name(element)
 
-    def hex_value(self, value):
-        if value is None or value == "":
+    def value_elements(self, value):
+        """A CDD attribute value as its elements, or None if it is not numeric.
+
+        CANdela serialises a list value as "(a,b,c)": `languages`,
+        `mayBeExec` and `trans` on the document, and the value of anything
+        typed by a field (array) data type -- a text table entry, a static
+        or a constant component. A scalar comes back as a single element.
+        """
+        if value is None:
+            return None
+        text = str(value).strip()
+        if text.startswith("(") and text.endswith(")"):
+            text = text[1:-1]
+        parts = [part.strip() for part in text.split(",")]
+        if not parts or any(not part for part in parts):
             return None
         try:
-            return f"0x{int(value):02X}"
+            return [int(part) for part in parts]
         except ValueError:
+            return None
+
+    def cdd_int(self, value, element_bits=8):
+        """A CDD attribute value as one integer, or None if it is not numeric.
+
+        A field value carries one entry per element, each `CVALUETYPE@bl`
+        bits wide -- that attribute is the length of one element, not of the
+        whole value ("Bit Length / Field Size" in the CANdelaStudio help).
+        The elements are folded into the integer they form on the wire,
+        first element most significant.
+        """
+        elements = self.value_elements(value)
+        if elements is None:
+            return None
+        folded = 0
+        for element in elements:
+            folded = (folded << element_bits) | element
+        return folded
+
+    def hex_value(self, value, element_bits=8):
+        if value is None or value == "":
+            return None
+        elements = self.value_elements(value)
+        if elements is None:
             return value
+        digits = max(2, (element_bits * len(elements) + 3) // 4)
+        return f"0x{self.cdd_int(value, element_bits):0{digits}X}"
 
     def text_map_values(self, table):
         values = []
@@ -113,16 +152,11 @@ class CddParserShared:
         """Parse a DATAOBJ/GAPDATAOBJ/SPECDATAOBJ/STRUCT member of a complex
         data type, DID Data, or Mux structure into a Member/Gap/Struct dict."""
         if element.tag == "GAPDATAOBJ":
-            bit_length = element.attrib.get("bl")
-            try:
-                bit_length = int(bit_length) if bit_length is not None else None
-            except ValueError:
-                bit_length = None
             return {
                 "name": self.name(element) or "(reserved)",
                 "qual": self.qual(element),
                 "type": "Gap",
-                "bitLength": bit_length,
+                "bitLength": self.cdd_int(element.attrib.get("bl")),
             }
         if element.tag == "STRUCT":
             return {

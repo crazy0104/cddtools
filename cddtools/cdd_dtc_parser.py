@@ -51,7 +51,10 @@ class CddDtcParser:
             start = text_map.attrib.get("s")
             if start is None:
                 continue
-            values[int(start)] = self._shared.text_by_path(text_map, "TEXT/TUV") or ""
+            value = self._shared.cdd_int(start)
+            if value is None:
+                continue
+            values[value] = self._shared.text_by_path(text_map, "TEXT/TUV") or ""
         return values
 
     def _record_template_fields(self, record_tmpl):
@@ -65,9 +68,11 @@ class CddDtcParser:
             name = self._shared.name(child)
             if child.tag == "ENUMRECORDITEMTMPL":
                 values = {
-                    int(etag.attrib.get("v")): self._shared.text_by_path(etag, "TUV")
+                    self._shared.cdd_int(etag.attrib.get("v")): self._shared.text_by_path(
+                        etag, "TUV"
+                    )
                     for etag in self._shared.direct_children(child, "ETAG")
-                    if etag.attrib.get("v") is not None
+                    if self._shared.cdd_int(etag.attrib.get("v")) is not None
                 }
                 fields[child.attrib.get("id")] = {"name": name, "kind": "enum", "values": values}
             else:
@@ -81,9 +86,9 @@ class CddDtcParser:
             if field is None:
                 continue
             if field["kind"] == "enum":
-                value_index = child.attrib.get("v")
+                value_index = self._shared.cdd_int(child.attrib.get("v"))
                 properties[field["name"]] = (
-                    field["values"].get(int(value_index)) if value_index is not None else None
+                    field["values"].get(value_index) if value_index is not None else None
                 )
             else:
                 properties[field["name"]] = self._shared.text_by_path(child, "TEXT/TUV")
@@ -106,7 +111,7 @@ class CddDtcParser:
         return used
 
     def parse_record(self, record, byte_length, template_fields, failure_types, used_ids):
-        raw = int(record.attrib.get("v", "0"))
+        raw = self._shared.cdd_int(record.attrib.get("v")) or 0
         if byte_length == 24:
             raw16 = raw >> 8
             failure_type = raw & 0xFF

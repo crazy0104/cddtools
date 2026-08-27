@@ -285,13 +285,11 @@ class CddTester:
             return bit_offset
         return 8 * (bit_offset // 8) + min(7, (bit_offset % 8) + bit_length - 1)
 
-    @staticmethod
-    def buffer(value, bit_length):
+    def buffer(self, value, bit_length, element_bits=8):
         """A value as the byte array a tester puts on the wire."""
         byte_count = max(1, math.ceil((bit_length or 8) / 8))
-        try:
-            number = int(value)
-        except (TypeError, ValueError):
+        number = self._shared.cdd_int(value, element_bits)
+        if number is None:
             number = 0
         return {
             "type": "Buffer",
@@ -390,7 +388,7 @@ class CddTester:
             "bitGroups": self._bit_groups(data_type, data_types),
             "constant": parameter.get("constant"),
             "default": parameter.get("default"),
-            "value": self.buffer(raw, bit_length),
+            "value": self.buffer(raw, bit_length, coded.get("bitLength") or 8),
             "physicalValue": None if raw is None else raw,
             "dataType": parameter.get("dataType"),
             "dataTypeQual": parameter.get("dataTypeQual"),

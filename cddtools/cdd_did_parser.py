@@ -50,7 +50,7 @@ class CddDidParser:
     def parse_entry(self, did, variant_refs, used_ids):
         identifier = self._shared.first_child(did, "STRUCTURE")
         members = self._shared.member_list(identifier)
-        number = int(did.attrib.get("n", "0"))
+        number = self._shared.cdd_int(did.attrib.get("n")) or 0
         return {
             "id": did.attrib.get("id"),
             "identifier": number,

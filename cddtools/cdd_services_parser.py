@@ -231,15 +231,19 @@ class CddServicesParser:
         byte_count = max(1, ((bit_length or 8) + 7) // 8)
         return " ".join(f"{(value >> shift) & 0xFF:02X}" for shift in range((byte_count - 1) * 8, -1, -8))
 
+    def _element_bits(self, data_type):
+        """The width of one element of a data type, the unit a field value
+        lists its entries in."""
+        coded = self._shared.first_child(data_type, "CVALUETYPE") if data_type is not None else None
+        if coded is None:
+            return 8
+        return self._optional_int(coded.attrib.get("bl")) or 8
+
     def _const_bytes(self, component):
-        try:
-            value = int(component.attrib.get("v"))
-        except (TypeError, ValueError):
+        value = self._shared.cdd_int(component.attrib.get("v"))
+        if value is None:
             return None
-        try:
-            bit_length = int(component.attrib.get("bl", "8"))
-        except ValueError:
-            bit_length = 8
+        bit_length = self._optional_int(component.attrib.get("bl")) or 8
         return self._hex_bytes(value, bit_length)
 
     def _component(self, component, context):
@@ -259,17 +263,19 @@ class CddServicesParser:
             item["role"] = "Static"
             slot_id = context["staticRefs"].get(component.attrib.get("id"))
             raw = context["staticValues"].get(slot_id)
-            item["value"] = self._shared.hex_value(raw)
             data_type = self._shared.by_id(component.attrib.get("dtref"))
+            element_bits = self._element_bits(data_type)
+            item["value"] = self._shared.hex_value(raw, element_bits)
             item["dataType"] = self._shared.name(data_type) if data_type is not None else None
             # Width comes from the referenced data type, so a 2-byte
             # identifier such as 0x9004 renders as "90 04", not "9004".
             # A slot this instance chose no value for stays a placeholder.
-            if raw in (None, ""):
+            number = self._shared.cdd_int(raw, element_bits)
+            if number is None:
                 item["bytes"] = ".."
             else:
                 bit_length, _min, _max, _variable = self._data_type_bit_length(data_type)
-                item["bytes"] = self._hex_bytes(int(raw), bit_length)
+                item["bytes"] = self._hex_bytes(number, bit_length)
             return item
 
         item["role"] = "Payload"

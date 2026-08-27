@@ -51,6 +51,36 @@ class SampleTestCase(unittest.TestCase):
         cls.shared, cls.ecu_doc = load_ecu_doc(SAMPLE)
 
 
+class FieldValueTests(unittest.TestCase):
+    """A field (array) value lists one entry per element, as "(a,b,c)".
+
+    `CVALUETYPE@bl` is the width of one element, so the value on the wire is
+    the elements folded together, first element most significant. Reading
+    such a value as a single number is what used to abort a whole import.
+    """
+
+    def setUp(self):
+        self.shared = CddParserShared()
+
+    def test_scalar_values_are_unchanged(self):
+        self.assertEqual(self.shared.cdd_int("1792"), 1792)
+        self.assertEqual(self.shared.hex_value("1792"), "0x700")
+        self.assertEqual(self.shared.hex_value("204"), "0xCC")
+
+    def test_field_values_fold_big_endian(self):
+        self.assertEqual(self.shared.cdd_int("(0,0,0,0,0,0)"), 0)
+        self.assertEqual(self.shared.cdd_int("(1,2)"), 0x0102)
+        self.assertEqual(self.shared.cdd_int("(1,2)", 16), 0x00010002)
+        self.assertEqual(self.shared.hex_value("(0,0,0,0,0,0)"), "0x000000000000")
+        self.assertEqual(self.shared.hex_value("(144,4)"), "0x9004")
+
+    def test_non_numeric_values_do_not_raise(self):
+        self.assertIsNone(self.shared.cdd_int("(en-US,zh-HANS)"))
+        self.assertIsNone(self.shared.cdd_int(""))
+        self.assertIsNone(self.shared.cdd_int(None))
+        self.assertEqual(self.shared.hex_value("(en-US,zh-HANS)"), "(en-US,zh-HANS)")
+
+
 class DataTypesParserTests(SampleTestCase):
     @classmethod
     def setUpClass(cls):
