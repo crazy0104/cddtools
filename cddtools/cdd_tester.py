@@ -70,6 +70,10 @@ CAN_FD_MAX_DLC = {
 }
 CLASSIC_CAN_DLC = 8
 
+# CAN DLC code -> payload bytes, for documents that store the raw code
+# instead of a tag such as "CANFD64".
+CAN_DLC_LENGTH = {9: 12, 10: 16, 11: 20, 12: 24, 13: 32, 14: 48, 15: 64}
+
 
 class CddTester:
     """Derives connection-oriented settings from the CDD.
@@ -161,14 +165,10 @@ class CddTester:
         # CAN FD settings live only on CAN FD interfaces; a classic CAN
         # interface simply has no CanFd* parameters, which is what makes
         # their absence mean "classic CAN" rather than "unknown".
-        can_fd = self._text(parameters, "CanFdHandling") == "Enabled"
+        can_fd = self._flag(parameters, "CanFdHandling")
         defaults["canfd"] = can_fd
-        defaults["brs"] = can_fd and self._text(parameters, "CanFdBrsHandling") == "Enabled"
-        defaults["dlc"] = (
-            CAN_FD_MAX_DLC.get(self._text(parameters, "CanFdMaxDlc"), CLASSIC_CAN_DLC)
-            if can_fd
-            else CLASSIC_CAN_DLC
-        )
+        defaults["brs"] = can_fd and self._flag(parameters, "CanFdBrsHandling")
+        defaults["dlc"] = self._max_dlc(parameters) if can_fd else CLASSIC_CAN_DLC
         if can_fd:
             data_baudrate = self._number(parameters, "CanFdDataBaudrate")
             if data_baudrate is not None:
@@ -188,6 +188,27 @@ class CddTester:
         """An enum parameter's tag text, e.g. AddrScheme -> "Mixed"."""
         parameter = parameters.get(name)
         return parameter.get("valueText") if parameter else None
+
+    def _flag(self, parameters, name):
+        """An on/off parameter, however this document spells it.
+
+        The tag text is what a document normally carries ("Enabled"), but a
+        document may define the parameter as a plain number instead, and
+        nothing stops it from wording the tags differently.
+        """
+        text = str(self._text(parameters, name) or "").strip().lower()
+        if text in ("enabled", "enable", "true", "yes", "on"):
+            return True
+        if text in ("disabled", "disable", "false", "no", "off"):
+            return False
+        return self._number(parameters, name, 0) != 0
+
+    def _max_dlc(self, parameters):
+        """CAN FD payload size, from the tag text or the raw DLC code."""
+        text = self._text(parameters, "CanFdMaxDlc")
+        if text in CAN_FD_MAX_DLC:
+            return CAN_FD_MAX_DLC[text]
+        return CAN_DLC_LENGTH.get(self._number(parameters, "CanFdMaxDlc"), CLASSIC_CAN_DLC)
 
     def _addr_format(self, parameters, name):
         """NORMAL / MIXED / EXTENDED, from the AddrScheme enum's tag text.
