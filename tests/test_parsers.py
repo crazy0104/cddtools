@@ -815,7 +815,7 @@ class ApiTests(unittest.TestCase):
             capture_output=True,
             text=True,
         )
-        self.assertEqual(completed.stdout.strip(), "cddtools 0.0.1")
+        self.assertEqual(completed.stdout.strip(), "cddtools 0.1.0")
 
 
 if __name__ == "__main__":
