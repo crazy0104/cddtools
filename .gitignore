@@ -7,3 +7,21 @@ __pycache__/
 venv/
 build/
 dist/
+
+# Confidential customer documents and the CANdelaStudio exports taken from
+# them. Only examples/CddTools.cdd -- a template-derived document with no
+# project data -- is safe to commit.
+examples/*.cdd
+examples/*.pdx
+examples/*.cdd~
+examples/*.cbk
+!examples/CddTools.cdd
+examples/Datatypes
+examples/DIDs
+examples/DTCs
+examples/CANdelaStudioen-US/
+examples/CANdelaStudioen-US.chm
+
+# JSON exported from a .cdd by the viewer or the parse_*_example scripts:
+# it carries the source document's content verbatim.
+*.json

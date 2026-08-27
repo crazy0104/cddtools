@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "cddtools"
 version = "0.0.1"
-description = "CANdela CDD parser that exports as JSON."
+description = "CDD diagnostic file parser that exports as JSON."
 readme = "README.md"
 requires-python = ">=3.9"
 authors = [{ name = "Joe.Jiang" }]
