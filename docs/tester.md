@@ -16,17 +16,27 @@ result = parse_tester_info("examples/CddTools.cdd")   # {"error":0,"data":{ecu:{
 
 # 或者分步，只要其中一部分
 shared, ecu_doc = load_ecu_doc("examples/CddTools.cdd")
-interface = CddAttributesParser(shared).active_interface(ecu_doc)
 tester = CddTester(shared)
+interface = tester.supported_interfaces(ecu_doc)[0]
 
 tester.detect_bus_kind(interface)      # "can" / "eth"
 tester.build_uds_timing(interface)     # {"pTime":150,"pExtTime":2000,"s3Time":4000,...}
 tester.build_can_addresses(interface)  # [{"type":"can","canAddr":{...}}, ...]
+tester.build_eth_addresses(interface)  # [{"type":"eth","ethAddr":{...}}, ...]
 tester.build(ecu_doc)                  # 整个结构
 ```
 
-注意传进去的是 `active_interface()` 而不是随便一个接口——理由见
-[parsers.md §6.4](parsers.md#64-三个接口入口的区别)。
+`build()` 输出**每个变体 × 每个受支持接口**一个测试仪，不是只取活动接口。命名规则：
+
+| 变体数 | 接口数 | 键 |
+|---|---|---|
+| 任意 | 1 | 变体 qual |
+| 1 | 多 | 接口 qual |
+| 多 | 多 | `变体.接口` |
+
+`supported_interfaces()` 先按 `COM.INTERFACES` 属性类别找（见
+[parsers.md §6.4](parsers.md#64-三个接口入口的区别)）；文档没有属性类别时退回按
+`<接口>.BusType` 的 qual 前缀发现接口。
 
 ## 2. 总线类型靠参数集判断，不靠名字
 
@@ -57,7 +67,8 @@ CAN 地址和时序的 key 来自活动接口下的通信参数，带回退：
 | `baudrate` | `Baudrate` | 无则不输出 |
 | `canfd` | `CanFdHandling` 标签 == `Enabled` | false |
 | `brs` | `CanFdBrsHandling` 标签 == `Enabled`（且 canfd 为真） | false |
-| `dlc` | `CanFdMaxDlc` 标签（`CANFD64` → 64 等） | 8（经典 CAN） |
+| `dlc` | `CanFdMaxDlc` 标签（`CANFD64` → 64 等），无标签时按裸 DLC 码（15 → 64） | 8（经典 CAN） |
+| `canfd` / `brs` | `CanFdHandling` / `CanFdBrsHandling` 的标签（大小写无关），无标签时按数值 ≠ 0 | false |
 | `dataBaudrate` | `CanFdDataBaudrate`，仅 CAN FD 接口 | 无则不输出 |
 | `pTime` | `P2Client` → `CP_P2Max_Ecu` → `CP_P2Max` | 无则不输出 |
 | `pExtTime` | `P2ExClient` → `CP_P2Star_Ecu` → `CP_P2Star` | 无则不输出 |
@@ -75,6 +86,22 @@ CAN 地址和时序的 key 来自活动接口下的通信参数，带回退：
 ```python
 sid = f"0x{request['bytes'].split()[0]}"   # "10 01" -> "0x10"
 ```
+
+每个服务条目带 `params` / `respParams`——请求和肯定响应里逐个可编辑的参数，顺序就是
+报文里的顺序（SID 那个常量不算参数）：
+
+| 报文组件 | 变成什么 |
+|---|---|
+| `CONSTCOMP spec='sid'` | 跳过 |
+| 其他 `CONSTCOMP` | 定值参数，不可编辑 |
+| `STATICCOMP` | 定值参数，名字取数据类型名（`spec` 为 `id`/`sub`/`accm` 时不可编辑） |
+| 指向电报的 payload 组件 | 展开成该电报的每个参数 |
+| `DIDDATAREF` 参数 | 展开成该 DID 的每个成员，成员自己命名（同一 DID 的成员常共用数据类型） |
+| `RECORDDATAOBJ` 参数 | 故障记忆条目，即 3 字节 DTC |
+| 文档没给内容的 payload | 一个可编辑、可删除的字节 |
+
+`subfunc` 取请求里 `spec` 为 `sub` 或 `accm` 的组件的第一个字节——SecurityAccess 用的
+是 `accm`。
 
 ## 5. 参数展开：给其他模块用的那一层
 
@@ -131,14 +158,29 @@ Intel（小端）:    off                                    # 信号起始 = �
                                        bs, stMin, nAs, nAr, nBs, nCr, nBr, nCs,
                                        maxWTF, paddingValue, padding,
                                        dlc, brs, canfd, remote, AE } } ],
+                # DoIP 接口给的是 { type:"eth", ethAddr:{ name, taType,
+                #   virReqType, virReqAddr, entityNotFoundBehavior,
+                #   entity:{vin,eid,gid,nodeType,logicalAddr[,nodeAddr]},
+                #   tester:{testerLogicalAddr,routeActiveTime,createConnectDelay} } }
     didList: [...],       # CddDidParser
     dtcList: [...],       # CddDtcParser
-    allServiceList: { "0x22": [ {id, name, serviceId, identifier,
-                                 request, positiveResponse, negativeResponse,
-                                 telegrams}, ... ] },
-    # telegrams[].parameters 已按 §5 展开
+    allServiceList: { "0x22": [ {id, name, serviceId, subfunc, autoSubfunc,
+                                 suppress, desc, params, respParams}, ... ] },
 } } }
 ```
+
+一个参数的形状（`§5` 的展开结果就装在 `meta.cddField` 里）：
+
+```
+{ id, name, type,            # "NUM" / "ARRAY" / "ASCII"
+  bitLen, value: {type:"Buffer", data:[...]}, phyValue,
+  deletable, editable,       # 定值/身份字段为 false
+  meta: { type:"CDD-FIELD", cddField:{ ...§5 的字段..., spec } },
+  DTC_Table: [...] }         # 仅 DTC 参数
+```
+
+`type` 的判定：ASCII/Unicode 编码 → `ASCII`；定长、≤32 位、非二进制、且数据类型不是
+`HexDump`/`Memory`/`DataRecord` 这类"字节容器"名 → `NUM`；其余 → `ARRAY`。
 
 ## 7. 实测结果
 
@@ -173,5 +215,7 @@ CAN FD 两种帧格式在同一份文档里都有样本。
   经典 CAN 接口压根没有 `CanFd*` 参数——所以「没有」本身就等于「经典 CAN」，不是
   「未知」。
 - `seqList` 恒为空列表，仅为兼容原有输出结构而保留。
-- DoIP 只做到识别和时序取值，**没有生成对应的地址结构**（样本里 DoIP 接口未启用，
-  无法验证）。
+- DoIP 地址结构已经生成（`CP_DoIPLogical*` 四个参数），但样本文档里 DoIP 接口未启用，
+  **该分支靠合成文档验证**，没有真实样本。
+- `build()` 里的地址只保留测试仪地址本身定义的字段：`baudrate` / `dataBaudrate` 属于
+  设备而不是地址，会被去掉。要读它们直接调 `build_can_addresses()`。

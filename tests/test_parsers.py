@@ -759,6 +759,70 @@ class TesterTests(SampleTestCase):
         # The gap is skipped but still advances the offset.
         self.assertEqual([g["bitOffset"] for g in packed["bitGroups"]], [0, 1, 4])
 
+    def test_build_indexes_services_with_their_parameters(self):
+        """A service carries what a tester sends and expects back, in the
+        request/response order of the telegram."""
+        tester = self.tester.build(self.ecu_doc)
+        variant = tester["CddTools"]["Base_Variant"]
+        session = next(
+            s for s in variant["allServiceList"]["0x10"] if s["name"] == "Default Session"
+        )
+
+        self.assertEqual(session["subfunc"], "0x01")
+        self.assertTrue(session["autoSubfunc"])
+        subfunc = session["params"][0]
+        self.assertEqual(subfunc["name"], "Subfunction DiagnosticSessionControl")
+        self.assertEqual(subfunc["bitLen"], 8)
+        self.assertEqual(subfunc["value"]["data"], [1])
+        # The byte that says which service variant this is cannot be edited away.
+        self.assertFalse(subfunc["editable"])
+        self.assertFalse(subfunc["deletable"])
+        # The response payload is a container, and its contents are the
+        # parameters -- not one opaque block.
+        self.assertEqual(
+            [(p["name"], p["bitLen"]) for p in session["respParams"][1:]],
+            [("P2", 16), ("P2Ex", 16)],
+        )
+
+    def test_subfunction_of_security_access(self):
+        """SecurityAccess marks its subfunction byte spec="accm", not "sub"."""
+        tester = self.tester.build(self.ecu_doc)
+        variant = tester["CddTools"]["Base_Variant"]
+        seed = next(
+            s for s in variant["allServiceList"]["0x27"] if s["name"] == "RequestSeed"
+        )
+        self.assertEqual(seed["subfunc"], "0x01")
+
+    def test_did_data_becomes_one_parameter_per_member(self):
+        """A telegram only references a DID; what goes on the wire is the
+        DID's own member list, and members often share a data type, so each
+        keeps its own name."""
+        tester = self.tester.build(self.ecu_doc)
+        variant = tester["CddTools"]["Base_Variant"]
+        service = next(
+            s for s in variant["allServiceList"]["0x22"] if s["name"] == "Development Data"
+        )
+
+        self.assertEqual(service["params"][0]["name"], "DataIdentifier")
+        self.assertEqual(service["params"][0]["value"]["data"], [0x01, 0x00])
+        self.assertEqual(
+            [(p["name"], p["bitLen"]) for p in service["respParams"][1:]],
+            [
+                ("Operating System (Version)", 16),
+                ("CAN Driver (Version)", 16),
+                ("NM (Version)", 16),
+                ("Diagnostic Module (Version)", 16),
+                ("Transport Layer (Version)", 16),
+            ],
+        )
+
+    def test_one_tester_per_variant_and_supported_interface(self):
+        """This document supports one interface, so the variant names the
+        tester; a second supported interface is what splits them."""
+        tester = self.tester.build(self.ecu_doc)
+        self.assertEqual(sorted(tester["CddTools"]), ["Base_Variant", "Base_Variant1"])
+        self.assertEqual(tester["CddTools"]["Base_Variant"]["interface"], "CAN")
+
     def test_build_shape(self):
         tester = self.tester.build(self.ecu_doc)
         ecu = next(iter(tester.values()))

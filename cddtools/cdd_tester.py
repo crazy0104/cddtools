@@ -74,6 +74,66 @@ CLASSIC_CAN_DLC = 8
 # instead of a tag such as "CANFD64".
 CAN_DLC_LENGTH = {9: 12, 10: 16, 11: 20, 12: 24, 13: 32, 14: 48, 15: 64}
 
+# Service names that only say what the service does, never which one it is.
+GENERIC_SERVICE_NAMES = (
+    "read",
+    "write",
+    "start",
+    "stop",
+    "result",
+    "request",
+    "send",
+    "control",
+    "reset",
+)
+
+# Data type names that say what a value is made of rather than what it means.
+# A value typed by one of these is a byte string the tester edits byte-wise,
+# and it is the data object, not the type, that names it.
+GENERIC_TYPE_NAME_PREFIXES = (
+    "hexdump",
+    "ascii",
+    "unicode",
+    "memory",
+    "datarecord",
+    "newdataobject",
+)
+
+# Component roles that pin the byte identifying which service variant this is.
+SUBFUNCTION_SPECS = ("sub", "accm")
+
+# Parameters that carry a DTC and are offered a table of the document's DTCs.
+DTC_TABLE_PARAM_NAMES = ("dtc", "listofdtc", "groupofdtc", "dtcgroups", "dtcgroup")
+
+DEFAULT_TESTER_LOGICAL_ADDR = 0x0E00
+
+# A DTC record parameter carries no data type of its own: a fault memory
+# entry is the three-byte DTC the pool stores.
+DTC_RECORD_BITS = 24
+
+
+def _normalize(text):
+    return "".join(char for char in str(text or "").lower() if char.isalnum())
+
+
+def _buffer(data, bit_length):
+    expected = max(1, math.ceil((bit_length or 8) / 8))
+    data = list(data)
+    if len(data) < expected:
+        data = [0] * (expected - len(data)) + data
+    elif len(data) > expected:
+        data = data[-expected:]
+    return {"type": "Buffer", "data": data}
+
+
+def _bytes_of(number, bit_length):
+    byte_count = max(1, math.ceil((bit_length or 8) / 8))
+    return [(number >> shift) & 0xFF for shift in range((byte_count - 1) * 8, -1, -8)]
+
+
+def _hex_text(data):
+    return " ".join(f"{byte:02X}" for byte in data)
+
 
 class CddTester:
     """Derives connection-oriented settings from the CDD.
@@ -426,8 +486,529 @@ class CddTester:
 
     # -- assembly ------------------------------------------------------------
 
+    # -- interfaces -----------------------------------------------------------
+
+    def supported_interfaces(self, ecu_doc):
+        """The interfaces a tester can be built for.
+
+        An interface is an attribute in the COM.INTERFACES category, set to 1
+        by the ECUs that support it. Documents that carry no attribute
+        categories still name their interfaces through the qualifier prefix
+        of a `<interface>.BusType` parameter, so that is the fallback.
+        """
+        interfaces = [
+            interface
+            for interface in self._attributes.parse_interfaces(ecu_doc)
+            if interface["enabled"]
+        ]
+        if interfaces:
+            return interfaces
+        return self._interfaces_by_bus_type(ecu_doc)
+
+    def _interfaces_by_bus_type(self, ecu_doc):
+        entries = self._attributes.parse(ecu_doc)
+        by_qual = {entry["qual"]: entry for entry in entries}
+
+        interfaces = []
+        for entry in entries:
+            qual = entry["qual"]
+            if "." not in qual:
+                continue
+            prefix, suffix = qual.split(".", 1)
+            if suffix.lower() != "bustype":
+                continue
+            support = by_qual.get(prefix)
+            if support is not None and str(support["value"]) == "0":
+                continue
+            interfaces.append(
+                {
+                    "name": (support or entry)["name"],
+                    "qual": prefix,
+                    "enabled": True,
+                    "parameters": [
+                        {
+                            **other,
+                            "interface": prefix,
+                            "parameter": other["qual"].split(".", 1)[1],
+                        }
+                        for other in entries
+                        if other["qual"].startswith(f"{prefix}.")
+                    ],
+                }
+            )
+        return interfaces
+
+    @staticmethod
+    def _interface_for_variant(interface, variant_qual):
+        """The interface with every parameter resolved for one variant.
+
+        A variant may override any communication parameter, so the parameter
+        list a tester is built from is variant-specific.
+        """
+        parameters = []
+        for parameter in interface["parameters"]:
+            resolved = parameter["variants"].get(variant_qual)
+            if resolved is None:
+                parameters.append(parameter)
+                continue
+            value = resolved["value"]
+            parameters.append(
+                {
+                    **parameter,
+                    "value": value,
+                    "valueText": (parameter["choices"] or {}).get(str(value), parameter["valueText"])
+                    if parameter["kind"] == "enum"
+                    else parameter["valueText"],
+                    "source": resolved["source"],
+                }
+            )
+        return {**interface, "parameters": parameters}
+
+    # -- addressing -----------------------------------------------------------
+
+    def _parameter_number(self, interface, name, default=None):
+        for parameter in interface["parameters"]:
+            if parameter["parameter"] == name:
+                number = self._shared.cdd_int(parameter["value"])
+                return default if number is None else number
+        return default
+
+    def _eth_address_entry(self, name, ta_type, target_addr, tester_addr, gateway_addr):
+        is_gateway = gateway_addr is not None
+        entity = {
+            "vin": "00000000000000000",
+            "eid": "00-00-00-00-00-00",
+            "gid": "00-00-00-00-00-00",
+            "nodeType": "gateway" if is_gateway else "node",
+            "logicalAddr": gateway_addr if is_gateway else target_addr,
+        }
+        if is_gateway:
+            entity["nodeAddr"] = target_addr
+
+        return {
+            "type": "eth",
+            "ethAddr": {
+                "name": name,
+                "taType": ta_type,
+                "virReqType": "broadcast",
+                "virReqAddr": "",
+                "entityNotFoundBehavior": "normal",
+                "entity": entity,
+                "tester": {
+                    "testerLogicalAddr": tester_addr,
+                    "routeActiveTime": 0,
+                    "createConnectDelay": 1000,
+                },
+            },
+        }
+
+    def build_eth_addresses(self, interface):
+        tester_addr = self._parameter_number(
+            interface, "CP_DoIPLogicalTesterAddress", DEFAULT_TESTER_LOGICAL_ADDR
+        )
+        gateway_addr = self._parameter_number(interface, "CP_DoIPLogicalGatewayAddress")
+        ecu_addr = self._parameter_number(interface, "CP_DoIPLogicalEcuAddress")
+        functional_addr = self._parameter_number(interface, "CP_DoIPLogicalFunctionalAddress")
+
+        addresses = []
+        if ecu_addr is not None:
+            addresses.append(
+                self._eth_address_entry(
+                    "Physical", "physical", ecu_addr, tester_addr, gateway_addr
+                )
+            )
+        if functional_addr is not None:
+            addresses.append(
+                self._eth_address_entry(
+                    "Functional", "functional", functional_addr, tester_addr, gateway_addr
+                )
+            )
+        return addresses
+
+    def build_addresses(self, interface, bus_kind):
+        if bus_kind == "eth":
+            return self.build_eth_addresses(interface)
+        if bus_kind == "can":
+            addresses = self.build_can_addresses(interface)
+            for address in addresses:
+                address["canAddr"].pop("baudrate", None)
+                address["canAddr"].pop("dataBaudrate", None)
+            return addresses
+        return []
+
+    def build_uds_time(self, interface, addresses, bus_kind):
+        uds_time = self.build_uds_timing(interface)
+        if bus_kind != "can":
+            uds_time["testerPresentEnable"] = False
+            return uds_time
+        if uds_time.get("testerPresentEnable"):
+            index = self._tester_present_addr_index(interface, addresses)
+            if index is None:
+                uds_time["testerPresentEnable"] = False
+            else:
+                uds_time["testerPresentAddrIndex"] = index
+        return uds_time
+
+    def _tester_present_addr_index(self, interface, addresses):
+        """Which address tester-present is sent on.
+
+        The document says so through TesterPresentPhys / TesterPresentFunc;
+        without either, the physical address is the sensible default.
+        """
+        preferred = None
+        if self._parameter_number(interface, "TesterPresentPhys") is not None:
+            preferred = "PHYSICAL"
+        elif self._parameter_number(interface, "TesterPresentFunc") is not None:
+            preferred = "FUNCTIONAL"
+
+        for addr_type in (preferred, "PHYSICAL", None):
+            for index, address in enumerate(addresses):
+                can_addr = address.get("canAddr")
+                if not can_addr:
+                    continue
+                if addr_type is None or can_addr.get("addrType") == addr_type:
+                    return index
+        return None
+
+    @staticmethod
+    def _tester_present_service_id(service_map):
+        services = service_map.get("0x3E") or []
+        for service in services:
+            if service.get("subfunc") == "0x00":
+                return service["id"]
+        return services[0]["id"] if services else None
+
+    # -- parameters -----------------------------------------------------------
+
+    def _param(self, field):
+        """One tester parameter from the facts about a value on the wire."""
+        bit_length = field.get("bitLength") or 8
+        meta = {
+            "type": "CDD-FIELD",
+            "cddField": {
+                "name": field.get("name"),
+                "startBit": field.get("startBit"),
+                "bitLength": field.get("bitLength"),
+                "minBitLength": field.get("minBitLength"),
+                "maxBitLength": field.get("maxBitLength"),
+                "variableLength": field.get("variableLength"),
+                "quantity": field.get("quantity"),
+                "byteOrder": field.get("byteOrder") or BIG_ENDIAN,
+                "encoding": field.get("encoding"),
+                "minimum": field.get("minimum"),
+                "maximum": field.get("maximum"),
+                "unit": field.get("unit"),
+                "factor": field.get("factor"),
+                "offset": field.get("offset"),
+                "choices": field.get("choices"),
+                "bitGroups": field.get("bitGroups"),
+                "members": field.get("members"),
+                "spec": field.get("spec"),
+            },
+        }
+
+        fixed = bool(field.get("fixedValue")) or field.get("spec") in ("id", "sub", "accm")
+        value = field.get("value")
+        param = {
+            "id": str(uuid.uuid4()),
+            "name": field.get("name") or "data",
+            "bitLen": bit_length,
+            "deletable": not fixed,
+            "editable": not fixed,
+            "meta": meta,
+        }
+
+        if field.get("encoding") in ("asc", "utf"):
+            data = _bytes_of(value, bit_length) if value is not None else [0] * math.ceil(bit_length / 8)
+            param["type"] = "ASCII"
+            param["value"] = _buffer(data, bit_length)
+            param["phyValue"] = _hex_text(data) if value is not None else ""
+            return param
+
+        if (
+            not field.get("variableLength")
+            and not field.get("byteString")
+            and bit_length <= 32
+            and field.get("encoding") != "bin"
+        ):
+            param["type"] = "NUM"
+            param["value"] = _buffer(_bytes_of(value or 0, bit_length), bit_length)
+            param["phyValue"] = 0 if value is None else value
+            return param
+
+        data = _bytes_of(value, bit_length) if value is not None else [0] * math.ceil(bit_length / 8)
+        param["type"] = "ARRAY"
+        param["value"] = _buffer(data, bit_length)
+        param["phyValue"] = _hex_text(data)
+        return param
+
+    def _data_type_field(self, name, data_type, default=None, prefer_name=False):
+        """The facts a parameter typed by `data_type` puts on the wire.
+
+        A field (array) type states the width of one element, so its total
+        width is that times the element count; a variable field contributes
+        its minimum.
+        """
+        coded = data_type.get("codedValue") or {}
+        physical = data_type.get("physicalValue") or {}
+        linear = data_type.get("linear") or {}
+        element_bits = coded.get("bitLength") or 8
+        min_size = coded.get("minSize")
+        max_size = coded.get("maxSize")
+        variable = coded.get("quantity") == "field" and min_size != max_size
+        if coded.get("quantity") == "field":
+            bit_length = element_bits * (min_size or 1)
+        else:
+            bit_length = element_bits
+
+        type_name = data_type.get("name") or data_type.get("qual") or ""
+        generic = _normalize(type_name).startswith(GENERIC_TYPE_NAME_PREFIXES)
+        return {
+            "name": name if prefer_name or generic or not type_name else type_name,
+            "startBit": 0,
+            "bitLength": bit_length,
+            "minBitLength": element_bits * min_size if min_size else bit_length,
+            "maxBitLength": element_bits * max_size if max_size else bit_length,
+            "variableLength": variable,
+            "quantity": coded.get("quantity"),
+            "byteOrder": BYTE_ORDERS.get(coded.get("byteOrder"), BIG_ENDIAN),
+            "encoding": ENCODINGS.get(coded.get("encoding"), coded.get("encoding")),
+            "minimum": min_size,
+            "maximum": max_size,
+            "unit": physical.get("unit"),
+            "factor": linear.get("factor", 1.0),
+            "offset": linear.get("offset", 0.0),
+            "choices": self._choices(data_type),
+            "byteString": generic,
+            "value": self._shared.cdd_int(default, element_bits),
+        }
+
+    def _params_from_did(self, did, data_types):
+        """A DID's data, one parameter per member.
+
+        The telegram only references the DID; what it carries is the DID's
+        own member list, which is what the tester has to encode.
+        """
+        params = []
+        for member in did["data"]:
+            if member["type"] == "Gap":
+                continue
+            if member["type"] == "Struct":
+                params.extend(
+                    self._params_from_did({"data": member["members"]}, data_types)
+                )
+                continue
+            data_type = data_types.get(member.get("dtQual"))
+            if data_type is None:
+                continue
+            params.append(
+                self._param(
+                    self._data_type_field(
+                        member["name"],
+                        data_type,
+                        member.get("staticValue") or member.get("default"),
+                        # Members of one DID often share a data type, so it is
+                        # the member that names the parameter.
+                        prefer_name=True,
+                    )
+                )
+            )
+        return params
+
+    def _param_from_telegram_parameter(self, telegram_parameter, data_types):
+        parameter = self.expand_parameter(telegram_parameter, data_types)
+        raw = parameter.get("constant")
+        if raw is None:
+            raw = parameter.get("default")
+        data_type = data_types.get(parameter.get("dataTypeQual")) or {}
+        type_name = data_type.get("name") or data_type.get("qual") or ""
+        generic = _normalize(type_name).startswith(GENERIC_TYPE_NAME_PREFIXES)
+        return self._param(
+            {
+                **parameter,
+                "name": parameter["name"] if generic else (type_name or parameter["name"]),
+                "byteString": generic,
+                "value": self._shared.cdd_int(raw, parameter.get("bitLength") or 8),
+                "fixedValue": parameter.get("constant") is not None,
+            }
+        )
+
+    def _params_from_component(self, component, telegrams, data_types):
+        """The parameters one telegram component contributes.
+
+        A component either pins a value itself -- the service id, a constant,
+        a static identifier or subfunction -- or points at a telegram whose
+        parameters are the payload.
+        """
+        if component["role"] == "ServiceId":
+            return []
+
+        if component["kind"] == "CONSTCOMP":
+            data = [int(part, 16) for part in (component.get("bytes") or "").split() if part]
+            if not data:
+                return []
+            number = int.from_bytes(bytes(data), "big")
+            return [
+                self._param(
+                    {
+                        "name": component["name"],
+                        "startBit": 0,
+                        "bitLength": 8 * len(data),
+                        "byteOrder": BIG_ENDIAN,
+                        "encoding": "uns",
+                        "value": number,
+                        "fixedValue": True,
+                        "spec": component.get("spec"),
+                    }
+                )
+            ]
+
+        if component["kind"] == "STATICCOMP":
+            data_type = data_types.get(component.get("dataType")) or {}
+            coded = data_type.get("codedValue") or {}
+            physical = data_type.get("physicalValue") or {}
+            linear = data_type.get("linear") or {}
+            data = [int(part, 16) for part in (component.get("bytes") or "").split() if part]
+            bit_length = 8 * len(data) if data else coded.get("bitLength")
+            return [
+                self._param(
+                    {
+                        "name": component.get("dataType") or component["name"],
+                        "startBit": 0,
+                        "bitLength": bit_length,
+                        "byteOrder": BYTE_ORDERS.get(coded.get("byteOrder"), BIG_ENDIAN),
+                        "encoding": ENCODINGS.get(coded.get("encoding"), coded.get("encoding")),
+                        "unit": physical.get("unit"),
+                        "factor": linear.get("factor", 1.0),
+                        "offset": linear.get("offset", 0.0),
+                        "choices": self._choices(data_type),
+                        "value": int.from_bytes(bytes(data), "big") if data else None,
+                        "fixedValue": True,
+                        "spec": component.get("spec"),
+                    }
+                )
+            ]
+
+        telegram = telegrams.get(component.get("telegram"))
+        if telegram and telegram["parameters"]:
+            params = []
+            for parameter in telegram["parameters"]:
+                if parameter["kind"] == "RECORDDATAOBJ":
+                    params.append(
+                        self._param(
+                            {
+                                "name": parameter["name"],
+                                "startBit": 0,
+                                "bitLength": DTC_RECORD_BITS,
+                                "byteOrder": BIG_ENDIAN,
+                                "encoding": "uns",
+                                "byteString": True,
+                            }
+                        )
+                    )
+                    continue
+                if parameter["kind"] == "DIDDATAREF":
+                    did = self._dids.get(parameter["qual"])
+                    if did is None:
+                        break
+                    params.extend(self._params_from_did(did, data_types))
+                    continue
+                params.append(self._param_from_telegram_parameter(parameter, data_types))
+            if params:
+                return params
+
+        # A payload the document leaves open: the tester offers one editable
+        # byte the user can grow.
+        return [
+            self._param(
+                {
+                    "name": component["name"],
+                    "startBit": 0,
+                    "bitLength": 8,
+                    "byteOrder": BIG_ENDIAN,
+                    "encoding": "bin",
+                    "variableLength": True,
+                }
+            )
+        ]
+
+    def _params_from_telegram(self, telegram, telegrams, data_types):
+        if telegram is None:
+            return []
+        params = []
+        for component in telegram["components"]:
+            params.extend(self._params_from_component(component, telegrams, data_types))
+        return params
+
+    def _attach_dtc_table(self, params, dtc_table):
+        if not dtc_table:
+            return
+        for param in params:
+            if _normalize(param["name"]) in DTC_TABLE_PARAM_NAMES:
+                param["DTC_Table"] = dtc_table
+
+    # -- services -------------------------------------------------------------
+
+    @staticmethod
+    def _service_label(instance, service, service_count):
+        label = instance["name"] or instance["qual"]
+        if service_count < 2:
+            return label
+        for candidate in (service.get("name"), service.get("qual")):
+            if candidate and _normalize(candidate) not in GENERIC_SERVICE_NAMES:
+                return f"{label}_{candidate}"
+        return label
+
+    @staticmethod
+    def _subfunction(request):
+        for component in request["components"]:
+            if component.get("spec") not in SUBFUNCTION_SPECS:
+                continue
+            data = [part for part in (component.get("bytes") or "").split() if part]
+            if data:
+                return f"0x{int(data[0], 16):02X}"
+        return None
+
+    def _build_service(self, instance, service, telegrams, data_types, dtc_table):
+        request = service.get("request")
+        if not request or not request.get("bytes"):
+            return None
+
+        sid = f"0x{request['bytes'].split()[0]}"
+        params = self._params_from_telegram(request, telegrams, data_types)
+        resp_params = self._params_from_telegram(
+            service.get("positiveResponse"), telegrams, data_types
+        )
+        self._attach_dtc_table(params, dtc_table)
+        self._attach_dtc_table(resp_params, dtc_table)
+
+        subfunction = self._subfunction(request)
+        return {
+            "id": str(uuid.uuid4()),
+            "name": self._service_label(instance, service, len(instance["services"])),
+            "serviceId": sid,
+            "subfunc": subfunction,
+            "params": params,
+            "respParams": resp_params,
+            "suppress": False,
+            "autoSubfunc": subfunction is not None,
+            "desc": f'{instance["className"]} / {service["qual"]}'
+            if service.get("qual")
+            else instance["className"],
+        }
+
+    # -- assembly -------------------------------------------------------------
+
+    @staticmethod
+    def _unique_key(testers, base):
+        if base not in testers:
+            return base
+        index = 2
+        while f"{base}_{index}" in testers:
+            index += 1
+        return f"{base}_{index}"
+
     def build(self, ecu_doc):
-        """The main-compatible tester structure, one entry per variant."""
         ecu = self._shared.first_child(ecu_doc, "ECU")
         if ecu is None:
             return {}
@@ -437,57 +1018,85 @@ class CddTester:
             or self._shared.text_by_path(ecu, "NAME/TUV")
             or "CDD"
         )
-        interface = self._attributes.active_interface(ecu_doc)
+        interfaces = self.supported_interfaces(ecu_doc)
+        instances = CddServicesParser(self._shared).parse(ecu_doc)
+        data_types = CddDataTypesParser(self._shared).parse(ecu_doc)
+        by_qual = {entry["qual"]: entry for entry in data_types}
+        by_name = {entry["name"]: entry for entry in data_types}
+        dtc_table = self._dtc_table(ecu_doc)
         did_list = CddDidParser(self._shared).parse(ecu_doc)
         dtc_list = CddDtcParser(self._shared).parse(ecu_doc)
-        instances = CddServicesParser(self._shared).parse(ecu_doc)
-        # Keyed by qualifier because that is what a telegram parameter
-        # carries; resolving each data type once keeps expansion cheap.
-        data_types = {
-            entry["qual"]: entry for entry in CddDataTypesParser(self._shared).parse(ecu_doc)
-        }
+        self._dids = {did["qual"]: did for did in did_list}
 
         variants = self._shared.direct_children(ecu, "VAR") or [ecu]
         result = {ecu_name: {}}
-        for variant in variants:
-            variant_qual = self._shared.qual(variant)
-            service_map = {}
-            for instance in instances:
-                if instance["variant"] != variant_qual:
-                    continue
-                for service in instance["services"]:
-                    request = service.get("request")
-                    if not request or not request.get("bytes"):
-                        continue
-                    # The service id is the first byte of the request, which
-                    # is the CONSTCOMP marked spec="sid".
-                    sid = f"0x{request['bytes'].split()[0]}"
-                    service_map.setdefault(sid, []).append(
-                        {
-                            "id": str(uuid.uuid5(uuid.NAMESPACE_OID, instance["id"] or "")),
-                            "name": instance["name"],
-                            "serviceId": sid,
-                            "identifier": instance["identifier"],
-                            "request": request,
-                            "positiveResponse": service.get("positiveResponse"),
-                            "negativeResponse": service.get("negativeResponse"),
-                            "telegrams": [
-                                self.expand_telegram(telegram, data_types)
-                                for telegram in instance["telegrams"]
-                            ],
-                        }
-                    )
+        for index, variant in enumerate(variants):
+            variant_qual = (
+                self._shared.qual(variant)
+                if variant is not ecu
+                else ecu_name
+            ) or f"{ecu_name}_{index + 1}"
+            service_map = self._service_map(
+                instances, variant_qual, {**by_qual, **by_name}, dtc_table
+            )
 
-            result[ecu_name][variant_qual or ecu_name] = {
-                "id": str(uuid.uuid5(uuid.NAMESPACE_OID, f"{ecu_name}/{variant_qual}")),
-                "name": variant_qual or ecu_name,
-                "type": self.detect_bus_kind(interface),
-                "interface": interface["qual"] if interface else None,
-                "udsTime": self.build_uds_timing(interface),
-                "seqList": [],
-                "address": self.build_can_addresses(interface),
-                "didList": did_list,
-                "dtcList": dtc_list,
-                "allServiceList": service_map,
-            }
+            for interface in interfaces:
+                resolved = self._interface_for_variant(interface, variant_qual)
+                bus_kind = self.detect_bus_kind(resolved)
+                addresses = self.build_addresses(resolved, bus_kind)
+                uds_time = self.build_uds_time(resolved, addresses, bus_kind)
+                if uds_time.get("testerPresentEnable"):
+                    service_id = self._tester_present_service_id(service_map)
+                    if service_id is not None:
+                        uds_time["testerPresentSpecialService"] = service_id
+
+                name = variant_qual if len(interfaces) == 1 else interface["qual"]
+                if len(variants) > 1 and len(interfaces) > 1:
+                    name = f"{variant_qual}.{interface['qual']}"
+                key = self._unique_key(result[ecu_name], name)
+                result[ecu_name][key] = {
+                    "id": str(uuid.uuid4()),
+                    "name": name,
+                    "type": bus_kind,
+                    "interface": interface["qual"],
+                    "udsTime": uds_time,
+                    "seqList": [],
+                    "address": addresses,
+                    "didList": did_list,
+                    "dtcList": dtc_list,
+                    "allServiceList": service_map,
+                }
         return result
+
+    def _service_map(self, instances, variant_qual, data_types, dtc_table):
+        service_map = {}
+        for instance in instances:
+            if instance["variant"] != variant_qual:
+                continue
+            telegrams = {
+                telegram["name"]: telegram for telegram in instance["telegrams"]
+            }
+            for service in instance["services"]:
+                built = self._build_service(
+                    instance, service, telegrams, data_types, dtc_table
+                )
+                if built is None:
+                    continue
+                service_map.setdefault(built["serviceId"], []).append(built)
+        return service_map
+
+    def _dtc_table(self, ecu_doc):
+        entries = []
+        for dtc in CddDtcParser(self._shared).parse(ecu_doc):
+            value = dtc["raw"] & 0xFFFFFF
+            entries.append(
+                {
+                    "identifier": dtc["id"],
+                    "name": dtc["errorText"] or dtc["dtc"],
+                    "hexNumber": f"0x{value:06X}",
+                    "hexValue": value,
+                    "codeText": dtc["dtc"],
+                }
+            )
+        entries.sort(key=lambda entry: entry["hexValue"])
+        return entries
