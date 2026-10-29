@@ -82,6 +82,7 @@ Both spellings are accepted (`parseDtcs` or `parse-dtcs`):
 | `parseDtcStatusMask` | DTC status byte |
 | `parseDiagnosticClasses` | Diagnostic classes |
 | `parseServices` | Diagnostic instances and telegrams |
+| `parseSnapshot` | Stable DID/DTC definitions grouped by variant, with expanded data types |
 | `parseStates` | State groups |
 | `parseInterfaces` | Every interface, each with an `enabled` flag |
 | `parseSupportedInterfaces` | Only the interfaces the ECU supports |
@@ -102,7 +103,14 @@ import cddtools
 cddtools.parse_dtcs("ECU.cdd")
 cddtools.parse_interfaces("ECU.cdd")
 cddtools.parse_tester_info("ECU.cdd")
+cddtools.parse_snapshot("ECU.cdd")
 ```
+
+`parse_snapshot` is a read-only view for comparing CDD files or variants. It
+resolves DID data types, retains fixed and variable bit lengths, and omits
+document-local IDs. DIDs and DTCs are selected by each variant's references;
+they are definitions, not the ECU's current fault state. It does not require
+a supported bus interface. Unresolved lengths are `None`, never zero.
 
 To run several parsers over one document, load it only once:
 

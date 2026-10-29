@@ -77,6 +77,7 @@ python -m cddtools parseDtcs input.cdd    # 输出到 stdout
 | `parseDtcStatusMask` | DTC 状态字节 |
 | `parseDiagnosticClasses` | 诊断类 |
 | `parseServices` | 诊断实例与电报 |
+| `parseSnapshot` | 按 variant 分组的稳定 DID/DTC 定义，展开关联数据类型 |
 | `parseStates` | 状态组 |
 | `parseInterfaces` | 全部接口，各带 `enabled` 标记 |
 | `parseSupportedInterfaces` | 仅 ECU 支持的接口 |
@@ -97,7 +98,13 @@ import cddtools
 cddtools.parse_dtcs("ECU.cdd")
 cddtools.parse_interfaces("ECU.cdd")
 cddtools.parse_tester_info("ECU.cdd")
+cddtools.parse_snapshot("ECU.cdd")
 ```
+
+`parse_snapshot` 提供用于文件或 variant 比较的只读数据：展开 DID 类型引用，
+保留固定及可变位长，移除文档内部 ID，并按各 variant 的引用筛选 DID/DTC。
+这些是诊断定义，不表示 ECU 当前故障状态。此入口不要求存在受支持的总线接口；
+无法解析的长度保留为 `None`，不会视为零。
 
 对同一个文档跑多个解析器时，只加载一次：
 
